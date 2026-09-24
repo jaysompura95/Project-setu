@@ -21,7 +21,7 @@ export const Route = createFileRoute("/report")({
       },
     ],
   }),
-  component: ReportPage;
+  component: ReportPage,
 });
 
 const CHANNELS = ["Voice", "SMS", "WhatsApp", "Web"] as const;
