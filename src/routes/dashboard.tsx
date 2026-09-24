@@ -120,33 +120,33 @@ function Dashboard() {
   return (
     <div className="min-h-screen bg-background">
       <SiteHeader />
-      <main className="mx-auto max-w-6xl px-6 py-14">
+      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-14">
         <p className="eyebrow">National priority list</p>
-        <h1 className="mt-3 text-4xl font-bold">
+        <h1 className="mt-3 text-3xl font-bold sm:text-4xl">
           Ranked, mapped and traceable to a citizen
         </h1>
 
-        <div className="mt-8 grid gap-4 sm:grid-cols-3">
+        <div className="mt-6 grid grid-cols-3 gap-2 sm:mt-8 sm:gap-4">
           {[
             { label: "Reports (90 days)", value: totalReports.toLocaleString("en-IN") },
             { label: "Population covered", value: people.toLocaleString("en-IN") },
             { label: "Districts flagged", value: String(ranked.length) },
           ].map((s) => (
-            <div key={s.label} className="rounded-lg border border-border bg-card p-5">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">
+            <div key={s.label} className="rounded-lg border border-border bg-card p-3 sm:p-5">
+              <p className="text-[10px] uppercase sm:text-xs tracking-wide text-muted-foreground">
                 {s.label}
               </p>
-              <p className="mt-2 font-display text-3xl font-bold">{s.value}</p>
+              <p className="mt-2 font-display text-lg font-bold sm:text-3xl">{s.value}</p>
             </div>
           ))}
         </div>
 
-        <div className="mt-8 flex flex-wrap gap-2">
+        <div className="-mx-4 mt-8 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:px-0">
           {(["All", ...SECTORS] as const).map((s) => (
             <button
               key={s}
               onClick={() => setSector(s as Sector | "All")}
-              className={`rounded-md border px-4 py-2 text-sm font-medium transition-colors ${
+              className={`shrink-0 rounded-md border px-4 py-2 text-sm font-medium transition-colors ${
                 sector === s
                   ? "border-accent bg-accent/15"
                   : "border-border text-muted-foreground hover:bg-secondary"
@@ -157,33 +157,33 @@ function Dashboard() {
           ))}
         </div>
 
-        <div className="mt-4 flex flex-wrap items-end gap-3">
+        <div className="mt-4 grid grid-cols-2 items-end gap-3 sm:flex sm:flex-wrap">
           <label className="text-xs text-muted-foreground">
             State
-            <select className={`${selectCls} mt-1 block`} value={state} onChange={(e) => setState(e.target.value)}>
+            <select className={`${selectCls} mt-1 block w-full`} value={state} onChange={(e) => setState(e.target.value)}>
               <option>All</option>
               {STATES.map((s) => <option key={s}>{s}</option>)}
             </select>
           </label>
           <label className="text-xs text-muted-foreground">
             Urgency
-            <select className={`${selectCls} mt-1 block`} value={urgency} onChange={(e) => setUrgency(e.target.value as Urgency | "All")}>
+            <select className={`${selectCls} mt-1 block w-full`} value={urgency} onChange={(e) => setUrgency(e.target.value as Urgency | "All")}>
               <option>All</option>
               {URGENCIES.map((u) => <option key={u}>{u}</option>)}
             </select>
           </label>
           <label className="text-xs text-muted-foreground">
             Min score
-            <input type="number" min={0} max={100} className={`${selectCls} mt-1 block w-24`} value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} />
+            <input type="number" min={0} max={100} className={`${selectCls} mt-1 block w-full sm:w-24`} value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} />
           </label>
           <label className="text-xs text-muted-foreground">
             Max score
-            <input type="number" min={0} max={100} className={`${selectCls} mt-1 block w-24`} value={maxScore} onChange={(e) => setMaxScore(Number(e.target.value))} />
+            <input type="number" min={0} max={100} className={`${selectCls} mt-1 block w-full sm:w-24`} value={maxScore} onChange={(e) => setMaxScore(Number(e.target.value))} />
           </label>
           <button className="text-sm text-muted-foreground underline" onClick={() => { setSector("All"); setState("All"); setUrgency("All"); setMinScore(0); setMaxScore(100); }}>
             Reset filters
           </button>
-          <div className="ml-auto flex gap-2">
+          <div className="col-span-2 flex gap-2 sm:ml-auto">
             <button disabled={!ranked.length} onClick={() => exportCsv(ranked)} className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-secondary disabled:opacity-50">Export CSV</button>
             <button disabled={!ranked.length} onClick={() => exportPdf(ranked)} className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground disabled:opacity-50">Export PDF</button>
           </div>
@@ -198,7 +198,7 @@ function Dashboard() {
               <li key={h.id} className="flex items-center gap-3">
                 <input type="checkbox" aria-label={`Include ${h.district} in brief`} checked={picked.includes(h.id)} onChange={() => togglePick(h.id)} className="h-4 w-4 accent-[var(--accent)]" />
                 <button
-                  onClick={() => setSelectedId(h.id)}
+                  onClick={() => { setSelectedId(h.id); if (window.innerWidth < 1024) setTimeout(() => document.getElementById("why-panel")?.scrollIntoView({ behavior: "smooth" }), 50); }}
                   className={`flex w-full items-center justify-between rounded-lg border bg-card p-4 text-left transition-colors ${
                     selected?.id === h.id
                       ? "border-accent shadow-sm"
@@ -206,7 +206,7 @@ function Dashboard() {
                   }`}
                 >
                   <div>
-                    <p className="font-display text-lg font-semibold">
+                    <p className="font-display text-base font-semibold sm:text-lg">
                       {h.district} — {h.sector}
                     </p>
                     <p className="text-sm text-muted-foreground">
@@ -226,7 +226,7 @@ function Dashboard() {
           </ul>
 
           {selected && (
-            <aside className="h-fit rounded-lg bg-navy p-6 text-navy-foreground">
+            <aside id="why-panel" className="h-fit scroll-mt-4 rounded-lg lg:sticky lg:top-4 bg-navy p-6 text-navy-foreground">
               <p className="eyebrow">Why this rank</p>
               <h2 className="mt-3 text-2xl font-bold">
                 {selected.district} — {selected.sector}
@@ -240,6 +240,13 @@ function Dashboard() {
                   </footer>
                 </blockquote>
               )}
+              {submissions.filter((s) => s.sector === selected.sector && s.district.toLowerCase() === selected.district.toLowerCase()).slice(0, 3).map((s) => (
+                <div key={s.id} className="mt-4 rounded-md bg-white/5 p-3 text-sm">
+                  {s.photo && <img src={s.photo} alt="Citizen photo evidence" className="mb-2 h-32 w-full rounded object-cover" />}
+                  <p>“{s.text}”</p>
+                  <p className="mt-1 text-xs text-navy-muted">New {s.channel.toLowerCase()} report · {s.language}</p>
+                </div>
+              ))}
               <dl className="mt-6 space-y-3 text-sm">
                 {[
                   ["Reports (90d)", selected.reports90d.toLocaleString("en-IN")],
@@ -264,7 +271,7 @@ function Dashboard() {
           )}
         </div>
 
-        <section className="mt-12 rounded-lg border border-border bg-card p-6">
+        <section className="mt-12 rounded-lg border border-border bg-card p-4 sm:p-6">
           <p className="eyebrow">AI priority brief</p>
           <h2 className="mt-2 text-2xl font-bold">Draft an evidence-based brief</h2>
           <p className="mt-1 text-sm text-muted-foreground">

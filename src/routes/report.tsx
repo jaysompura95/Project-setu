@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { SiteHeader } from "@/components/setu/SiteHeader";
 import { LANGUAGES } from "@/lib/setu-data";
 import { addSubmission, classify, useSubmissions } from "@/lib/setu-store";
@@ -25,6 +25,10 @@ export const Route = createFileRoute("/report")({
 });
 
 const CHANNELS = ["Voice", "SMS", "WhatsApp", "Web"] as const;
+const LANG_CODES: Record<string, string> = {
+  Hindi: "hi-IN", Kannada: "kn-IN", Marathi: "mr-IN", Bengali: "bn-IN", Tamil: "ta-IN",
+  Telugu: "te-IN", Malayalam: "ml-IN", Odia: "or-IN", Assamese: "as-IN", English: "en-IN",
+};
 
 function ReportPage() {
   const submissions = useSubmissions();
@@ -33,6 +37,10 @@ function ReportPage() {
   const [district, setDistrict] = useState("");
   const [channel, setChannel] = useState<(typeof CHANNELS)[number]>("Voice");
   const [recording, setRecording] = useState(false);
+  const [photo, setPhoto] = useState<string | undefined>();
+  const [voiceErr, setVoiceErr] = useState("");
+  const [sent, setSent] = useState(false);
+  const recRef = useRef<{ stop: () => void } | null>(null);
 
   const preview = text.trim() ? classify(text) : null;
 
@@ -50,26 +58,69 @@ function ReportPage() {
       sector,
       urgency,
       translated: trimmed,
+      photo,
       at: Date.now(),
     });
     setText("");
+    setPhoto(undefined);
+    setSent(true);
+    setTimeout(() => setSent(false), 3000);
   }
 
-  function simulateVoice() {
-    setRecording(true);
+  function toggleVoice() {
+    setVoiceErr("");
+    if (recording) {
+      recRef.current?.stop();
+      return;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const w = window as any;
+    const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
+    if (!SR) {
+      setVoiceErr("Voice input isn't supported in this browser — try Chrome, or type your message.");
+      return;
+    }
+    const rec = new SR();
+    rec.lang = LANG_CODES[language] ?? "en-IN";
+    rec.interimResults = true;
+    rec.continuous = true;
+    const base = text ? text.trim() + " " : "";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    rec.onresult = (e: any) => {
+      let t = "";
+      for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
+      setText(base + t);
+    };
+    rec.onerror = () => setVoiceErr("Couldn't hear you — check microphone permission and try again.");
+    rec.onend = () => setRecording(false);
+    recRef.current = rec;
     setChannel("Voice");
-    setTimeout(() => {
-      setRecording(false);
-      setText("No water in our colony for two weeks, children are falling sick.");
-    }, 1400);
+    setRecording(true);
+    rec.start();
+  }
+
+  function onPhoto(file?: File) {
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) return setVoiceErr("Photo is too large (max 8 MB).");
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 900 / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = img.width * scale;
+      c.height = img.height * scale;
+      c.getContext("2d")?.drawImage(img, 0, 0, c.width, c.height);
+      setPhoto(c.toDataURL("image/jpeg", 0.8));
+      URL.revokeObjectURL(img.src);
+    };
+    img.src = URL.createObjectURL(file);
   }
 
   return (
     <div className="min-h-screen bg-background">
       <SiteHeader />
-      <main className="mx-auto max-w-6xl px-6 py-14">
+      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-14">
         <p className="eyebrow">Citizen intake</p>
-        <h1 className="mt-3 text-4xl font-bold">Tell us what your area needs</h1>
+        <h1 className="mt-3 text-3xl font-bold sm:text-4xl">Tell us what your area needs</h1>
         <p className="mt-3 max-w-2xl text-muted-foreground">
           Speak or write in your own language. SETU translates it, identifies the
           sector and urgency, and adds it to the national demand map.
@@ -86,7 +137,7 @@ function ReportPage() {
                   key={c}
                   type="button"
                   onClick={() => setChannel(c)}
-                  className={`rounded-md border px-4 py-2 text-sm font-medium transition-colors ${
+                  className={`rounded-md border px-3 sm:px-4 py-2 text-sm font-medium transition-colors ${
                     channel === c
                       ? "border-accent bg-accent/15 text-foreground"
                       : "border-border text-muted-foreground hover:bg-secondary"
@@ -111,14 +162,25 @@ function ReportPage() {
 
             <button
               type="button"
-              onClick={simulateVoice}
-              className="mt-3 inline-flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium transition-colors hover:bg-secondary"
+              onClick={toggleVoice}
+              className="mt-3 mr-2 inline-flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium transition-colors hover:bg-secondary"
             >
               <span
                 className={`h-2.5 w-2.5 rounded-full ${recording ? "animate-pulse bg-destructive" : "bg-accent"}`}
               />
-              {recording ? "Listening…" : "Record a voice note (demo)"}
+              {recording ? "Listening… tap to stop" : "Speak your request"}
             </button>
+            <label className="mt-3 inline-flex cursor-pointer items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-secondary">
+              Add a photo
+              <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={(e) => onPhoto(e.target.files?.[0])} />
+            </label>
+            {voiceErr && <p className="mt-2 text-sm text-destructive">{voiceErr}</p>}
+            {photo && (
+              <div className="mt-3 flex items-start gap-3">
+                <img src={photo} alt="Attached evidence" className="h-24 w-32 rounded-md object-cover" />
+                <button type="button" onClick={() => setPhoto(undefined)} className="text-sm text-muted-foreground underline">Remove</button>
+              </div>
+            )}
 
             <div className="mt-6 grid gap-4 sm:grid-cols-2">
               <div>
@@ -167,6 +229,7 @@ function ReportPage() {
             >
               Submit report
             </button>
+            {sent && <p className="mt-3 text-sm font-medium">Thank you — your report is now on the policy dashboard.</p>}
           </form>
 
           <aside className="rounded-lg bg-navy p-6 text-navy-foreground">
@@ -180,6 +243,7 @@ function ReportPage() {
               <ul className="mt-4 space-y-4">
                 {submissions.map((s) => (
                   <li key={s.id} className="border-b border-white/10 pb-4 last:border-0">
+                    {s.photo && <img src={s.photo} alt="" className="mb-2 h-24 w-full rounded object-cover" />}
                     <p className="text-sm">{s.text}</p>
                     <p className="mt-2 text-xs text-navy-muted">
                       {s.district} · {s.sector} · {s.urgency} · {s.language} via{" "}
