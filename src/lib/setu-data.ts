@@ -34,9 +34,9 @@ export type Hotspot = {
 
 export const URGENCY_WEIGHT: Record<Urgency, number> = {
   Routine: 1,
-  Elevated: 1.6,
-  High: 2.3,
-  Emergency: 3,
+  Elevated: 2,
+  High: 3,
+  Emergency: 4,
 };
 
 export const SECTORS: Sector[] = [
@@ -61,13 +61,25 @@ export const LANGUAGES = [
   "English",
 ];
 
-/** Explainable score: (volume × severity × population reach) ÷ existing investment. */
+/**
+ * Explainable score: (reports × urgency weight × population affected)
+ * ÷ existing investment weight, normalised to 0–100 against the
+ * highest-scoring hotspot (which lands at 98).
+ */
+function rawScore(h: Hotspot): number {
+  return (h.reports90d * URGENCY_WEIGHT[h.urgency] * h.population) / h.investmentIndex;
+}
+
+let maxRawCache: number | null = null;
+function maxRaw(): number {
+  if (maxRawCache === null) {
+    maxRawCache = Math.max(...HOTSPOTS.map(rawScore));
+  }
+  return maxRawCache;
+}
+
 export function priorityScore(h: Hotspot): number {
-  const volume = Math.log10(h.reports90d + 10) / 3.5;
-  const severity = URGENCY_WEIGHT[h.urgency] / 3;
-  const reach = Math.log10(h.population + 10) / 6.2;
-  const raw = (volume * severity * reach) / (h.investmentIndex / 5);
-  return Math.max(1, Math.min(99, Math.round(raw * 190)));
+  return Math.max(1, Math.min(99, Math.round((rawScore(h) / maxRaw()) * 98)));
 }
 
 export const REPORTS: Report[] = [
