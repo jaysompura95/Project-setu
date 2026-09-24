@@ -10,6 +10,7 @@ export type Submission = {
   sector: Sector;
   urgency: Urgency;
   translated: string;
+  photo?: string;
   at: number;
 };
 
