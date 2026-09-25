@@ -1,274 +1,483 @@
-"""
-SETU (सेतु) — AI for Digital Public Infrastructure & Governance
-A citizen-feedback-to-policy priority platform.
+"""SETU — a Streamlit prototype for multilingual public infrastructure planning."""
 
-Run locally:   streamlit run app.py
-Deploy:        push to GitHub, connect repo on share.streamlit.io
-"""
+from __future__ import annotations
 
-import streamlit as st
+import io
+import uuid
+from datetime import datetime, timezone
+from typing import Any
+
 import pandas as pd
-import plotly.express as px
-import time
+import streamlit as st
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import landscape, letter
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Spacer, Table, TableStyle, Paragraph
 
-# ---------------------------------------------------------------------------
-# Page config & theme
-# ---------------------------------------------------------------------------
+from setu_data import (
+    CHANNELS,
+    HOTSPOTS,
+    LANGUAGES,
+    SECTORS,
+    URGENCIES,
+    URGENCY_WEIGHT,
+    classify,
+    investment_label,
+    rank_hotspots,
+    ranking_reasons,
+)
+
+
 st.set_page_config(
-    page_title="SETU — Citizen to Policy AI Platform",
-    page_icon="🛣️",
+    page_title="SETU | Citizen voice to policy",
+    page_icon="सेतु",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-NAVY = "#0B3D91"
-NAVY_DARK = "#081E42"
-SAFFRON = "#E8871E"
-GREEN = "#1E7A4C"
-MUTE = "#5B6472"
 
-st.markdown(
-    f"""
-    <style>
-    .setu-header {{
-        background:{NAVY_DARK}; padding:22px 28px; border-radius:10px;
-        color:white; margin-bottom:22px;
-    }}
-    .setu-header .dev {{ font-size:26px; font-weight:700; }}
-    .setu-header .en {{ font-size:12px; letter-spacing:3px; color:{SAFFRON}; font-weight:700; }}
-    .setu-header .track {{ font-size:12px; color:#9FB0C8; margin-top:4px; }}
-    .quote-box {{
-        border-left:3px solid {SAFFRON}; padding:10px 14px; font-style:italic;
-        background:{NAVY_DARK}; color:#C9D3E0; border-radius:6px; font-size:13px;
-    }}
-    .stage-done {{ color:{GREEN}; font-weight:700; }}
-    .stage-active {{ color:{SAFFRON}; font-weight:700; }}
-    .stage-pending {{ color:{MUTE}; }}
-    </style>
-    <div class="setu-header">
-        <span class="dev">सेतु</span> &nbsp; <span class="en">SETU</span>
-        <div class="track">AI for Digital Public Infrastructure &amp; Governance</div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+def initialise_state() -> None:
+    if "submissions" not in st.session_state:
+        st.session_state.submissions = []
+    if "last_submitted" not in st.session_state:
+        st.session_state.last_submitted = None
 
-# ---------------------------------------------------------------------------
-# Mock data
-# ---------------------------------------------------------------------------
-@st.cache_data
-def load_hotspots() -> pd.DataFrame:
-    data = [
-        dict(name="Bengaluru North", cat="Water", reports=1240, pop=182000,
-             inv_weight=1, urg="High", lang="Kannada",
-             quote="No piped water for 3 weeks near Yelahanka.", stage=4),
-        dict(name="Purnia, Bihar", cat="Roads", reports=980, pop=210500,
-             inv_weight=1, urg="High", lang="Hindi",
-             quote="सड़क के गड्ढों की वजह से कल एक बाइक सवार गिर गया।", stage=3),
-        dict(name="Nagpur East", cat="Sanitation", reports=640, pop=96200,
-             inv_weight=2, urg="Medium", lang="Marathi",
-             quote="Garbage hasn't been collected on our street in 10 days.", stage=2),
-        dict(name="Kohima", cat="Electricity", reports=410, pop=54000,
-             inv_weight=2, urg="Medium", lang="English",
-             quote="Power cuts every evening for the past month.", stage=2),
-        dict(name="Alappuzha", cat="Healthcare", reports=265, pop=71300,
-             inv_weight=4, urg="Low", lang="Malayalam",
-             quote="Nearest PHC has no doctor on weekends.", stage=1),
-        dict(name="Jodhpur Rural", cat="Water", reports=390, pop=88400,
-             inv_weight=2, urg="Medium", lang="Hindi",
-             quote="बोरवेल तीन हफ्ते से खराब है, टैंकर नहीं आया।", stage=1),
-        dict(name="Coimbatore South", cat="Roads", reports=210, pop=63000,
-             inv_weight=4, urg="Low", lang="Tamil",
-             quote="சாலை விளக்குகள் வேலை செய்யவில்லை.", stage=5),
+
+def format_indian(value: int | float) -> str:
+    return f"{int(value):,}"
+
+
+def base_hotspots() -> list[dict[str, Any]]:
+    return [dict(hotspot) for hotspot in HOTSPOTS]
+
+
+def live_hotspots() -> list[dict[str, Any]]:
+    hotspots = base_hotspots()
+    submissions = st.session_state.submissions
+    for hotspot in hotspots:
+        additions = [
+            report
+            for report in submissions
+            if report["district"].casefold() == hotspot["district"].casefold()
+            and report["sector"] == hotspot["sector"]
+        ]
+        hotspot["reports90d"] += len(additions)
+        hotspot["liveAdds"] = len(additions)
+    return hotspots
+
+
+def ranked_dataframe(hotspots: list[dict]) -> pd.DataFrame:
+    ranked = rank_hotspots(hotspots)
+    rows = []
+    for index, hotspot in enumerate(ranked, start=1):
+        rows.append(
+            {
+                "Rank": index,
+                "District": hotspot["district"],
+                "State": hotspot["state"],
+                "Sector": hotspot["sector"],
+                "Priority score": hotspot["score"],
+                "Reports (90d)": hotspot["reports90d"],
+                "Urgency": hotspot["urgency"],
+                "Population affected": hotspot["population"],
+                "Existing investment": investment_label(hotspot["investmentIndex"]),
+                "Why this rank": ranking_reasons(hotspot, ranked),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def create_pdf(dataframe: pd.DataFrame) -> bytes:
+    buffer = io.BytesIO()
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(letter),
+        rightMargin=0.35 * inch,
+        leftMargin=0.35 * inch,
+        topMargin=0.35 * inch,
+        bottomMargin=0.35 * inch,
+    )
+    styles = getSampleStyleSheet()
+    story = [
+        Paragraph("SETU — Ranked infrastructure hotspots", styles["Title"]),
+        Paragraph(
+            "Priority score = (reports × urgency weight × population affected) ÷ existing investment, normalised to 0–100.",
+            styles["BodyText"],
+        ),
+        Spacer(1, 0.18 * inch),
     ]
-    df = pd.DataFrame(data)
+    columns = [
+        "Rank",
+        "District",
+        "State",
+        "Sector",
+        "Priority score",
+        "Reports (90d)",
+        "Urgency",
+        "Population affected",
+        "Existing investment",
+        "Why this rank",
+    ]
+    table_data = [columns]
+    for row in dataframe.to_dict("records"):
+        table_data.append(
+            [
+                row[column]
+                if column not in {"Reports (90d)", "Population affected"}
+                else format_indian(row[column])
+                for column in columns
+            ]
+        )
+    table = Table(table_data, repeatRows=1, colWidths=[0.4 * inch, 1.15 * inch, 1.0 * inch, 0.85 * inch, 0.7 * inch, 0.8 * inch, 0.75 * inch, 0.95 * inch, 1.0 * inch, 3.0 * inch])
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#17284b")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#ccd3df")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f6f8")]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.append(table)
+    document.build(story)
+    return buffer.getvalue()
 
-    urg_weight = {"Low": 1, "Medium": 2, "High": 3, "Emergency": 4}
-    df["urg_weight"] = df["urg"].map(urg_weight)
 
-    # Priority Score = (Reports x Urgency x Population) / Existing Investment
-    raw = (df["reports"] * df["urg_weight"] * (df["pop"] / 1000)) / df["inv_weight"]
-    df["score"] = (raw / raw.max() * 96 + 3).round().astype(int)  # normalize to ~3-99
-    df["score"] = df["score"].clip(upper=99)
-    return df.sort_values("score", ascending=False).reset_index(drop=True)
-
-
-hotspots = load_hotspots()
-
-SECTOR_WORDS = {
-    "Water": ["water", "पानी", "बोरवेल", "tanker", "पाइप"],
-    "Roads": ["road", "सड़क", "गड्ढ", "pothole", "bike", "traffic"],
-    "Sanitation": ["garbage", "कचरा", "drain", "sewage"],
-    "Electricity": ["power", "बिजली", "electricity", "outage"],
-    "Healthcare": ["hospital", "doctor", "clinic", "phc", "health"],
-}
-URGENCY_HINTS = ["accident", "injur", "emergency", "weeks", "months", "हफ्ते", "महीने", "गिर"]
+def render_sidebar() -> str:
+    st.sidebar.title("सेतु · SETU")
+    st.sidebar.caption("Citizen voice → evidence → public infrastructure priorities")
+    page = st.sidebar.radio(
+        "Navigate",
+        ["Overview", "Report an issue", "Policy dashboard", "Method & limits"],
+        label_visibility="collapsed",
+    )
+    st.sidebar.divider()
+    st.sidebar.info(
+        "Prototype data is illustrative. Connect verified census, infrastructure and investment sources before policy use."
+    )
+    return page
 
 
-def classify_sector(text: str) -> str:
-    t = text.lower()
-    for sector, words in SECTOR_WORDS.items():
-        if any(w.lower() in t for w in words):
-            return sector
-    return "Roads"
-
-
-def classify_urgency(text: str) -> str:
-    t = text.lower()
-    if any(h in t for h in URGENCY_HINTS):
-        return "High"
-    if len(text) > 40:
-        return "Medium"
-    return "Low"
-
-
-# ---------------------------------------------------------------------------
-# Tabs
-# ---------------------------------------------------------------------------
-tab_overview, tab_report, tab_dashboard, tab_impact = st.tabs(
-    ["Overview", "Report an Issue", "Priority Dashboard", "Impact Tracker"]
-)
-
-# ---------------- Overview ----------------
-with tab_overview:
-    st.markdown("### A national bridge between citizen voice and infrastructure policy")
-    st.caption(
-        "SETU aggregates development requests from citizens across India — by voice, "
-        "text and messaging apps — and turns them into ranked, explainable priorities "
-        "for policymakers."
+def render_overview() -> None:
+    st.title("A national bridge between citizen voice and policy")
+    st.caption("A multilingual Digital Public Good prototype for India")
+    st.write(
+        "SETU turns citizen development requests from voice, text and messaging channels into "
+        "ranked, traceable infrastructure priorities. The prototype runs without the Lovable backend "
+        "or any required API key."
     )
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Citizen reports aggregated", f"{hotspots['reports'].sum():,}")
-    c2.metric("Languages supported", "22")
-    c3.metric("Demand hotspots ranked", len(hotspots))
-    c4.metric("Sectors tracked", hotspots["cat"].nunique())
+    action_col, dashboard_col = st.columns(2)
+    with action_col:
+        if st.button("Report an issue", type="primary", width="stretch"):
+            st.session_state.page_override = "Report an issue"
+            st.rerun()
+    with dashboard_col:
+        if st.button("Open policy dashboard", width="stretch"):
+            st.session_state.page_override = "Policy dashboard"
+            st.rerun()
 
-    st.markdown("#### How the platform is structured")
-    layers = [
-        ("1", "Intake", "Voice, SMS, WhatsApp & web — every Indian language, every channel."),
-        ("2", "Understanding", "Bhashini/IndicTrans2 translation, sector classification, urgency scoring."),
-        ("3", "Correlation", "Joined with Census, NFHS and infrastructure investment data."),
-        ("4", "Policy Layer", "Ranked, explainable recommendations for national planners."),
+    st.divider()
+    st.subheader("The problem")
+    problem_cols = st.columns(4)
+    problems = [
+        ("01", "Fragmented systems", "Complaints scatter across portals, helplines and paper registers."),
+        ("02", "Misaligned spending", "Investment plans are disconnected from what citizens report."),
+        ("03", "Language exclusion", "English-first tools exclude rural and non-literate populations."),
+        ("04", "No impact loop", "There is no shared way to measure whether a funded project solved the demand."),
     ]
-    for n, title, desc in layers:
-        col1, col2 = st.columns([0.06, 0.94])
-        col1.markdown(f"**{n}**")
-        col2.markdown(f"**{title}** — {desc}")
+    for column, (number, title, body) in zip(problem_cols, problems):
+        with column:
+            st.metric(number, title)
+            st.caption(body)
 
-# ---------------- Report an Issue ----------------
-with tab_report:
-    left, right = st.columns([1, 1.2])
+    st.divider()
+    st.subheader("From a voice note to a policy line-item")
+    stages = st.columns(4)
+    pipeline = [
+        ("01 · Intake", "Voice, SMS, WhatsApp and web in the citizen's language."),
+        ("02 · Understanding", "Detect sector and urgency with transparent keyword rules."),
+        ("03 · Correlation", "Join demand with population and existing investment."),
+        ("04 · Policy layer", "Publish a ranked list with evidence and reasons."),
+    ]
+    for column, (title, body) in zip(stages, pipeline):
+        with column:
+            st.markdown(f"**{title}**")
+            st.write(body)
+
+    st.divider()
+    st.subheader("Top priorities in the prototype")
+    top = rank_hotspots(live_hotspots())[:5]
+    top_df = pd.DataFrame(
+        [
+            {
+                "District": hotspot["district"],
+                "State": hotspot["state"],
+                "Sector": hotspot["sector"],
+                "Priority score": hotspot["score"],
+                "Reports": hotspot["reports90d"],
+            }
+            for hotspot in top
+        ]
+    )
+    st.dataframe(top_df, width="stretch", hide_index=True)
+    st.caption(
+        "Priority = report volume × urgency weight × population affected ÷ existing investment. "
+        "Scores are normalised against the visible comparison set."
+    )
+
+
+def render_report() -> None:
+    st.title("Tell SETU what your area needs")
+    st.caption("Write or record a request in your language. The prototype classifies it and adds it to this session.")
+    left, right = st.columns([1.35, 1])
 
     with left:
-        st.markdown("#### Submit a report")
-        st.caption("Pick a language & channel, then describe the issue")
-        lang = st.selectbox("Language", ["English", "हिन्दी", "தமிழ்", "বাংলা", "मराठी"])
-        channel = st.radio("Channel", ["Text", "Voice", "WhatsApp"], horizontal=True)
-        complaint = st.text_area(
-            "Describe the issue",
-            placeholder="e.g. सड़क में तीन महीने से बड़े गड्ढे हैं, कल एक बाइक सवार गिर गया",
-            height=110,
-        )
-        submitted = st.button("Submit & run AI pipeline", type="primary", use_container_width=True)
+        with st.form("citizen_report", clear_on_submit=False):
+            channel = st.selectbox("Channel", CHANNELS, index=0)
+            language = st.selectbox("Language", LANGUAGES, index=0)
+            district = st.text_input("District or locality", placeholder="e.g. Purnia")
+            message = st.text_area(
+                "Your message",
+                height=150,
+                placeholder="Example: हमारी कॉलोनी में दो हफ्ते से पानी नहीं आया",
+            )
+            audio = None
+            if channel == "Voice":
+                audio_input = getattr(st, "audio_input", None)
+                if audio_input is not None:
+                    audio = audio_input("Attach a voice recording (optional)")
+                else:
+                    st.caption("Voice recording is not available in this Streamlit runtime. Add the transcription below.")
+            photo = st.file_uploader("Add photo evidence (optional)", type=["png", "jpg", "jpeg"])
+            submitted = st.form_submit_button("Submit report", type="primary")
 
-    with right:
-        st.markdown("#### AI pipeline trace")
-        st.caption("What happens after you hit submit")
-        placeholder = st.empty()
-
-        steps = [
-            "Intake received — report logged with channel, language & timestamp",
-            "Speech/text normalized — Bhashini ASR + IndicTrans2 translation",
-            "Sector classified — routed to the right infrastructure category",
-            "Urgency scored — NLU rates severity from routine to emergency",
-            "Geo-tagged & correlated — joined with demographic & investment data",
-            "Ranked on dashboard — priority score computed, hotspot updated live",
-        ]
+        if message.strip():
+            sector, urgency = classify(message)
+            st.info(f"Live reading · Sector: **{sector}** · Urgency: **{urgency}** · Language: **{language}**")
 
         if submitted:
-            text = complaint.strip() or "सड़क में तीन महीने से बड़े गड्ढे हैं, कल एक बाइक सवार गिर गया"
-            sector = classify_sector(text)
-            urgency = classify_urgency(text)
+            errors = []
+            if not message.strip():
+                errors.append("Add a message or transcription.")
+            if not district.strip():
+                errors.append("Add a district or locality.")
+            if errors:
+                for error in errors:
+                    st.error(error)
+            else:
+                sector, urgency = classify(message)
+                photo_bytes = photo.getvalue() if photo else None
+                record = {
+                    "id": str(uuid.uuid4()),
+                    "text": message.strip(),
+                    "language": language,
+                    "channel": channel,
+                    "district": district.strip(),
+                    "sector": sector,
+                    "urgency": urgency,
+                    "photo": photo_bytes,
+                    "has_audio": audio is not None,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+                st.session_state.submissions.insert(0, record)
+                st.session_state.last_submitted = record
+                st.success("Thank you — your report is now part of this session's demand signal.")
 
-            with placeholder.container():
-                progress_area = st.container()
-                for i, step in enumerate(steps):
-                    progress_area.markdown(f"✅ {step}")
-                    time.sleep(0.25)
+    with right:
+        st.subheader("How planners read this")
+        st.write(
+            "Each report is kept with its original message, channel, language and classifier output. "
+            "Known hotspot counts update immediately in this session; new localities stay in the intake queue "
+            "until verified demographic and infrastructure data is joined."
+        )
+        last = st.session_state.last_submitted
+        if last:
+            st.markdown("**Latest submission**")
+            st.write(f'{last["district"]} · {last["sector"]} · {last["urgency"]}')
+            st.caption(f'{last["channel"]} · {last["language"]}')
+        st.subheader("Session submissions")
+        if not st.session_state.submissions:
+            st.caption("Nothing yet. Submitted reports will appear here.")
+        for report in st.session_state.submissions[:5]:
+            with st.container(border=True):
+                st.write(f'**{report["district"]}** · {report["sector"]} · {report["urgency"]}')
+                st.caption(f'{report["channel"]} · {report["language"]}')
+                st.write(report["text"])
+                if report.get("photo"):
+                    st.image(report["photo"], width=220)
 
-            st.success(f"**Sector:** {sector}  |  **Urgency:** {urgency}  |  **Channel:** {channel} ({lang})")
-            st.info(
-                f"This report has been added to the {sector} demand pool and will "
-                f"affect its rank on the Priority Dashboard."
+
+def render_dashboard() -> None:
+    st.title("Policy dashboard")
+    st.caption("Ranked, mapped and traceable to a citizen report")
+
+    hotspots = live_hotspots()
+    states = sorted({hotspot["state"] for hotspot in hotspots})
+    filter_col_1, filter_col_2, filter_col_3 = st.columns(3)
+    with filter_col_1:
+        selected_sectors = st.multiselect("Sector", SECTORS, default=SECTORS)
+    with filter_col_2:
+        selected_states = st.multiselect("State", states, default=states)
+    with filter_col_3:
+        selected_urgencies = st.multiselect("Urgency", URGENCIES, default=URGENCIES)
+
+    filtered = [
+        hotspot
+        for hotspot in hotspots
+        if hotspot["sector"] in selected_sectors
+        and hotspot["state"] in selected_states
+        and hotspot["urgency"] in selected_urgencies
+    ]
+    ranked = rank_hotspots(filtered)
+    dataframe = ranked_dataframe(filtered)
+
+    total_reports = sum(item["reports90d"] for item in ranked)
+    total_population = sum(item["population"] for item in ranked)
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Reports (90 days)", format_indian(total_reports))
+    metric_cols[1].metric("Population covered", format_indian(total_population))
+    metric_cols[2].metric("Districts flagged", len(ranked))
+    metric_cols[3].metric("New session reports", len(st.session_state.submissions))
+
+    if not ranked:
+        st.warning("No hotspots match these filters.")
+        return
+
+    st.subheader("Ranked demand hotspots")
+    st.dataframe(
+        dataframe,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "Priority score": st.column_config.ProgressColumn("Priority score", min_value=0, max_value=100, format="%d"),
+            "Reports (90d)": st.column_config.NumberColumn(format="%,d"),
+            "Population affected": st.column_config.NumberColumn(format="%,d"),
+        },
+    )
+
+    chart_col, detail_col = st.columns([1, 1])
+    with chart_col:
+        st.subheader("Score by district")
+        chart_df = pd.DataFrame(
+            {"Priority score": [item["score"] for item in ranked]},
+            index=[item["district"] for item in ranked],
+        )
+        st.bar_chart(chart_df, horizontal=True)
+    with detail_col:
+        selected_id = st.selectbox(
+            "Inspect a hotspot",
+            [item["id"] for item in ranked],
+            format_func=lambda item_id: next(item["district"] for item in ranked if item["id"] == item_id),
+        )
+        selected = next(item for item in ranked if item["id"] == selected_id)
+        st.subheader(f'{selected["district"]} — {selected["sector"]}')
+        st.write(f'“{selected["sampleQuote"]}”')
+        st.caption(f'{selected["channel"]} report · {selected["language"]}, translated')
+        st.write(
+            f'**Score {selected["score"]}** = ({format_indian(selected["reports90d"])} reports × '
+            f'urgency {URGENCY_WEIGHT[selected["urgency"]]} × {format_indian(selected["population"])} people) '
+            f'÷ investment {selected["investmentIndex"]}, normalised 0–100.'
+        )
+        st.info(f'Why this rank: {ranking_reasons(selected, ranked)}.')
+
+    st.divider()
+    export_col, brief_col = st.columns([1, 1])
+    with export_col:
+        st.subheader("Export")
+        csv_bytes = dataframe.to_csv(index=False).encode("utf-8")
+        pdf_bytes = create_pdf(dataframe)
+        st.download_button("Download CSV", csv_bytes, "setu-hotspots.csv", "text/csv", width="stretch")
+        st.download_button("Download PDF", pdf_bytes, "setu-hotspots.pdf", "application/pdf", width="stretch")
+    with brief_col:
+        st.subheader("Evidence brief")
+        st.caption("Generated from the visible data only; no external AI key is required.")
+        selected_ids = st.multiselect(
+            "Hotspots to include",
+            [item["id"] for item in ranked],
+            default=[item["id"] for item in ranked[:3]],
+            format_func=lambda item_id: next(item["district"] for item in ranked if item["id"] == item_id),
+        )
+        supporting_feedback = st.text_area(
+            "Supporting policymaker feedback (optional)",
+            placeholder="Add a verified note or local government observation.",
+            key="brief_feedback",
+        )
+        if st.button("Generate evidence brief", type="primary", disabled=not selected_ids):
+            chosen = [item for item in ranked if item["id"] in selected_ids]
+            lines = [
+                "### Summary",
+                f"SETU identifies {len(chosen)} priority hotspot(s) from the visible comparison set. "
+                "The ranking uses citizen report volume, urgency, affected population and existing investment.",
+                "",
+                "### Priority projects",
+            ]
+            for position, item in enumerate(chosen, start=1):
+                lines.append(
+                    f"{position}. **{item['district']} — {item['sector']}** (score {item['score']}/100): "
+                    f"{format_indian(item['reports90d'])} reports in 90 days, "
+                    f"population {format_indian(item['population'])}, {item['urgency'].lower()} urgency, "
+                    f"existing investment {investment_label(item['investmentIndex']).lower()}."
+                )
+            lines.extend(["", "### Citizen evidence"])
+            for item in chosen:
+                lines.append(f'- “{item["sampleQuote"]}” — {item["language"]} {item["channel"].lower()} report.')
+            lines.extend(
+                [
+                    "",
+                    "### Recommended next steps",
+                    "1. Validate the hotspot with the responsible district department.",
+                    "2. Join verified census, infrastructure and investment data before funding decisions.",
+                    "3. Publish a completion update and ask affected citizens to confirm resolution.",
+                ]
             )
-        else:
-            placeholder.markdown("\n".join(f"⚪ {s}" for s in steps))
+            if supporting_feedback.strip():
+                lines.extend(["", "### Supporting note", supporting_feedback.strip()])
+            st.markdown("\n".join(lines))
 
-# ---------------- Priority Dashboard ----------------
-with tab_dashboard:
-    st.markdown("#### Ranked hotspots")
-    st.caption("Live-ranked demand hotspots across India, filterable by sector")
 
-    cats = ["All"] + sorted(hotspots["cat"].unique().tolist())
-    chosen_cat = st.radio("Filter by sector", cats, horizontal=True, label_visibility="collapsed")
-
-    filtered = hotspots if chosen_cat == "All" else hotspots[hotspots["cat"] == chosen_cat]
-    filtered = filtered.sort_values("score", ascending=False)
-
-    col_list, col_chart = st.columns([1, 1])
-
-    with col_list:
-        selected_name = st.radio(
-            "Hotspot",
-            filtered["name"].tolist(),
-            label_visibility="collapsed",
-        )
-
-    with col_chart:
-        fig = px.bar(
-            filtered.sort_values("score"),
-            x="score", y="name", orientation="h",
-            color="score", color_continuous_scale=[MUTE, SAFFRON],
-            labels={"score": "Priority score", "name": ""},
-            height=320,
-        )
-        fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), coloraxis_showscale=False,
-                           plot_bgcolor="white", paper_bgcolor="white")
-        st.plotly_chart(fig, use_container_width=True)
-
-    row = hotspots[hotspots["name"] == selected_name].iloc[0]
-    st.markdown("---")
-    st.markdown(f"##### Why this rank — {row['name']} ({row['cat']})")
-    st.markdown(
-        f'<div class="quote-box">"{row["quote"]}"<br>— citizen report, {row["lang"]}, machine-translated</div>',
-        unsafe_allow_html=True,
+def render_method() -> None:
+    st.title("Method and limits")
+    st.write(
+        "This Streamlit build removes the hidden Lovable dependency and keeps the prototype's core promise "
+        "visible: every recommendation can be traced to a report and a scoring formula."
     )
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Reports (90d)", f"{row['reports']:,}")
-    m2.metric("Population affected", f"{row['pop']:,}")
-    m3.metric("Urgency", row["urg"])
-    m4.metric("Priority score", int(row["score"]))
-
-# ---------------- Impact Tracker ----------------
-with tab_impact:
-    st.markdown("#### Impact tracker")
-    st.caption(
-        "Closes the loop the problem statement asks for — did the recommended "
-        "project actually get funded and built?"
+    st.subheader("Explainable priority score")
+    st.code("Priority = (reports × urgency weight × population affected) ÷ existing investment")
+    st.write(
+        "Urgency weights are Routine = 1, Elevated = 2, High = 3 and Emergency = 4. "
+        "Scores are normalised to 0–100 against the currently visible comparison set."
+    )
+    st.subheader("Prototype boundaries")
+    st.write(
+        "- The included records are illustrative, not official government data.\n"
+        "- The classifier is a multilingual keyword baseline, not a production NLU model.\n"
+        "- Voice recordings are accepted as evidence; production deployment should connect ASR and translation services.\n"
+        "- Session submissions are intentionally temporary. Add PostgreSQL or another durable store before public launch.\n"
+        "- New localities are not silently assigned census values; they remain pending data enrichment."
+    )
+    st.subheader("Production path")
+    st.write(
+        "Connect Bhashini or another approved ASR/translation provider, load verified data.gov.in and state datasets, "
+        "persist submissions with a reviewed schema, and add role-based access before using the dashboard for public decisions."
     )
 
-    stages = ["Reported", "Recommended", "Funded", "In progress", "Resolved"]
-    pick = st.selectbox("Select a hotspot", hotspots["name"].tolist())
-    row = hotspots[hotspots["name"] == pick].iloc[0]
 
-    cols = st.columns(len(stages))
-    for i, (col, stage_name) in enumerate(zip(cols, stages)):
-        if i < row["stage"]:
-            col.markdown(f'<div class="stage-done">✅<br>{stage_name}<br>Complete</div>', unsafe_allow_html=True)
-        elif i == row["stage"]:
-            col.markdown(f'<div class="stage-active">🟠<br>{stage_name}<br>In motion</div>', unsafe_allow_html=True)
-        else:
-            col.markdown(f'<div class="stage-pending">⚪<br>{stage_name}<br>Pending</div>', unsafe_allow_html=True)
-
-st.markdown("---")
-st.caption("SETU — a proposed Digital Public Good for national infrastructure planning · prototype for demo purposes")
+initialise_state()
+sidebar_page = render_sidebar()
+page = st.session_state.pop("page_override", None) or sidebar_page
+if page == "Overview":
+    render_overview()
+elif page == "Report an issue":
+    render_report()
+elif page == "Policy dashboard":
+    render_dashboard()
+else:
+    render_method()
